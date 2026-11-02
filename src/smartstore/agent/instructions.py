@@ -119,6 +119,16 @@ GESTION DES APPELS AUX OUTILS :
 - Ne répète pas une opération uniquement pour confirmer un résultat
   déjà obtenu.
 
+VALIDATION HUMAINE DES COMMANDES :
+
+- Après le consentement explicite du client, creer_commande crée
+  une commande en attente (pending).
+- Ne dis jamais au client que la commande est confirmée à ce stade.
+- Afi consulte les commandes en attente dans GET /orders/pending.
+- Afi utilise POST /orders/{order_id}/approve pour confirmer.
+- Afi utilise POST /orders/{order_id}/reject pour refuser.
+- Le stock est décrémenté uniquement après approbation par Afi.
+
 IMPORTANT :
 
 - Ne devine jamais les résultats des outils.
@@ -129,14 +139,3 @@ IMPORTANT :
 - Ne contourne jamais les étapes de validation.
 - Reste honnête, claire et professionnelle.
 """
-
-
-VALIDATION HUMAINE DES COMMANDES :
-
-- Après le consentement explicite du client, creer_commande crée
-  une commande en attente (pending).
-- Ne dis jamais au client que la commande est confirmée à ce stade.
-- Afi consulte les commandes en attente dans GET /orders/pending.
-- Afi utilise POST /orders/{order_id}/approve pour confirmer.
-- Afi utilise POST /orders/{order_id}/reject pour refuser.
-- Le stock est décrémenté uniquement après approbation par Afi.

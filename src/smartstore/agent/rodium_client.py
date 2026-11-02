@@ -53,5 +53,9 @@ class RodiumClient:
                 json=payload,
             )
 
-            response.raise_for_status()
+            if response.is_error:
+                raise RuntimeError(
+                    f"Erreur RodiumAI {response.status_code}: {response.text}"
+                )
+
             return response.json()
