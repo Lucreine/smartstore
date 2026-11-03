@@ -9,9 +9,7 @@ from smartstore.agent.instructions import SYSTEM_INSTRUCTIONS
 from smartstore.agent.rodium_client import RodiumClient
 from smartstore.tools import TOOLS, execute_tool
 
-
-MAX_STEPS = 20
-
+MAX_STEPS = 10
 
 async def run_agent(
     user_message: str,
@@ -37,6 +35,7 @@ async def run_agent(
 
     trace: list[dict[str, Any]] = []
     tool_cache: dict[str, dict[str, Any]] = {}
+    out_of_stock_refs: set[str] = set()
 
     for step in range(1, max_steps + 1):
         # PENSER : le modèle décide de répondre ou d'utiliser des outils.
@@ -117,7 +116,6 @@ async def run_agent(
                 print(f"\n🔧 OUTIL UTILISÉ : {tool_name}")
                 print(f"📥 ARGUMENTS : {arguments}")
 
-                # Identifier un appel à partir du nom et des arguments.
                 cache_key = json.dumps(
                     {
                         "tool": tool_name,
@@ -133,6 +131,27 @@ async def run_agent(
                     print(f"♻️ RÉSULTAT RÉUTILISÉ : {tool_name}")
                 else:
                     result = await execute_tool(tool_name, arguments)
+
+                    if tool_name == "verifier_stock" and result.get("success") is True and result.get("available") is False:
+                        ref = result.get("reference")
+                        if ref:
+                            out_of_stock_refs.add(ref)
+                            print(f"🚫 PRODUIT ÉPUISÉ AJOUTÉ AU REGISTRE : {ref}")
+
+                    # 2. Si chercher_produits renvoie des produits, on retire ceux qui sont dans out_of_stock_refs
+                    if tool_name == "chercher_produits" and result.get("success") is True:
+                        products = result.get("products", [])
+                        filtered_products = [
+                            p for p in products 
+                            if p.get("reference") not in out_of_stock_refs
+                        ]
+                        result["products"] = filtered_products
+                        if not filtered_products:
+                           result = {
+                                "success": True,
+                                "products": [],
+                                "message": "Aucune alternative disponible en stock. Le produit demandé est en rupture et il n'y a pas d'autre substitut. Passe directement à la création du devis (creer_commande) avec les articles disponibles."
+                            }
 
                     # Ne mémoriser que les résultats réussis.                    
                     if result.get("success") is True and tool_name != "creer_commande":
@@ -178,8 +197,7 @@ async def run_agent(
     return {
         "success": False,
         "response": (
-            "La limite d'étapes a été atteinte. "
-            "La réponse n'a pas pu être finalisée."
+            "La limite d'étapes a été atteinte. La réponse n'a pas pu être finalisée."
         ),
         "steps": max_steps,
         "trace": trace,

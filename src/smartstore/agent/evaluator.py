@@ -202,55 +202,45 @@ def evaluate_response(
                         f"ne correspond pas au stock réel ({quantity})."
                     )
 
-    # 5. Vérifier qu'une alternative disponible et vérifiée est proposée.
+   # 5. Vérifier qu'une alternative est proposée UNIQUEMENT si l'agent a vérifié un autre produit disponible en stock.
     if unavailable_products:
-        available_alternatives = []
-
-        # Identifier les références des produits déjà demandés par le client.
-        normalized_user_message = normalize_text(user_message)
-
-        requested_references = {
-            reference
-            for reference, product in products.items()
-            if product.get("name")
-            and normalize_text(product["name"]) in normalized_user_message
-        }
-
-        # Identifier les références des produits indisponibles.
         unavailable_references = {
             reference
             for reference, result in stock_results.items()
             if result.get("available") is False
         }
+        
+        requested_references = {
+            reference
+            for reference, product in products.items()
+            if product.get("name") and normalize_text(product["name"]) in normalize_text(user_message)
+        }
 
-        # Identifier les alternatives disponibles qui n'étaient pas demandées.
+        # Identifier les autres produits vérifiés et disponibles en stock qui n'étaient pas demandés
+        verified_available_alternatives = []
         for reference, result in stock_results.items():
             if reference in requested_references:
                 continue
-
             if reference in unavailable_references:
                 continue
+            if result.get("available") is True:
+                product = products.get(reference, {})
+                product_name = product.get("name")
+                if product_name:
+                    verified_available_alternatives.append(product_name)
 
-            if result.get("available") is not True:
-                continue
-
-            product = products.get(reference, {})
-            product_name = product.get("name")
-
-            if product_name:
-                available_alternatives.append(product_name)
-
-        # Vérifier qu'une véritable alternative est mentionnée.
-        alternative_mentioned = any(
-            normalize_text(name) in normalized_response
-            for name in available_alternatives
-        )
-
-        if not available_alternatives or not alternative_mentioned:
-            issues.append(
-                "Un produit est indisponible, mais aucune alternative "
-                "différente, disponible et vérifiée n'est proposée."
+        # Si l'agent a trouvé et vérifié une alternative en stock, on exige qu'elle soit mentionnée
+        if verified_available_alternatives:
+            alternative_mentioned = any(
+                normalize_text(name) in normalized_response
+                for name in verified_available_alternatives
             )
+
+            if not alternative_mentioned:
+                issues.append(
+                    "Un produit est indisponible et une alternative vérifiée existe, mais aucune n'est proposée."
+                )           
+   
     # 6. Vérifier les affirmations concernant les commandes.
     confirmation_phrases = (
         "commande confirmee",

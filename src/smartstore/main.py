@@ -1,6 +1,6 @@
 import logging
 from typing import Any
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Security
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from smartstore.agent.orchestrator import run_agent
@@ -12,7 +12,8 @@ from smartstore.tools.orders import (
 import os
 from smartstore.services.whatsapp import send_whatsapp_message
 from smartstore.agent.orchestrator import run_agent
-from smartstore.tools.orders import load_orders, approve_order, reject_order
+from smartstore.tools.orders import load_orders, approve_order, reject_order, create_order_request
+import json
 
 app = FastAPI(
     title="SmartStore API",
@@ -117,65 +118,112 @@ security = HTTPBearer()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "mon_secret_securise")
 AFI_CHAT_ID = os.getenv("AFI_CHAT_ID", "2290167535145@c.us") # Le numéro WhatsApp d'Afi
 
-# Mémoire simple de dédoublonnage (en production, utilise Redis ou KV)
 processed_messages = set()
 
-async def process_incoming_message(chat_id: str, sender_name: str, text: str):
-    """Exécute l'agent ou gère les commandes d'Afi en arrière-plan."""
+async def process_incoming_message(chat_id: str, text: str):
+    """Exécute l'agent ou gère les validations d'Afi par WhatsApp."""
     
-    # 1. Gestion des commandes si c'est Afi qui répond (OUI ID / NON ID)
     if chat_id == AFI_CHAT_ID:
         text_upper = text.strip().upper()
-        if text_upper.startswith("OUI") or text_upper.startswith("NON"):
-            parts = text_upper.split()
-            if len(parts) == 2 and parts[1].isdigit():
-                order_id = int(parts[1])
-                if parts[0] == "OUI":
-                    res = approve_order(order_id)
-                    msg = f"✅ Commande #{order_id} validée avec succès !" if res["success"] else f"❌ Erreur : {res.get('message')}"
-                else:
-                    res = reject_order(order_id)
-                    msg = f"❌ Commande #{order_id} refusée." if res["success"] else f"❌ Erreur : {res.get('message')}"
-                
-                await send_whatsapp_message(AFI_CHAT_ID, msg)
-                return
+        parts = text_upper.split()
+        
+        if len(parts) == 2 and parts[1].isdigit():
+            action = parts[0]
+            order_id = int(parts[1])
+            
+            if action == "OUI":
+                result = approve_order(order_id)
+                if result["success"]:
+                    msg_afi = f"✅ Commande #{order_id} validée avec succès. Le stock a été mis à jour."
+                    order_data = result.get("order", {})
+                    client_chat_id = order_data.get("chat_id") or order_data.get("client_chat_id")
 
-    # 2. Cas général : Message d'un client traité par l'agent
-    # (Ici tu peux injecter un garde-fou contre l'injection de prompt ou vérifier les limites)
+                    if client_chat_id:
+                        await send_whatsapp_message(
+                            client_chat_id, 
+                            f"🎉 Bonne nouvelle ! Votre commande #{order_id} a été validée par Afi. Nous préparons votre livraison."
+                        )
+                else:
+                    msg_afi = f"❌ Erreur lors de la validation : {result.get('message')}"
+            elif action == "NON":
+                result = reject_order(order_id)
+                if result["success"]:
+                    msg_afi = f"❌ Commande #{order_id} refusée."
+
+                    order_data = result.get("order", {})
+                    client_chat_id = order_data.get("chat_id") or order_data.get("client_chat_id")
+                    if client_chat_id:
+                        await send_whatsapp_message(
+                            client_chat_id, 
+                            f"❌ Désolé, votre commande #{order_id} n'a pas pu être validée par Afi."
+                        )
+                else:
+                    msg_afi = f"❌ Erreur : {result.get('message')}"
+            else:
+                msg_afi = "Commande incomprise. Répondez par OUI <id> ou NON <id> (ex: OUI 12)."
+            
+            await send_whatsapp_message(AFI_CHAT_ID, msg_afi)
+            return
+
     result = await run_agent(text)
     bot_response = result["response"]
-
-    # Si une commande a été générée et mise en attente, on prévient Afi
-    # (Tu peux adapter selon la façon dont ton agent crée la commande en statut 'pending')
     
-    # Réponse au client
     await send_whatsapp_message(chat_id, bot_response)
 
+    orders = load_orders()
+    pending_orders = [o for o in orders if o.get("status") == "pending"]
+    
+    if pending_orders:
+        latest_order = pending_orders[-1]
+        order_id = latest_order.get("id")
+        
+        if not latest_order.get("notified_afi"):
+            latest_order["notified_afi"] = True
+            
+            details = latest_order.get("details", "Articles divers")
+            zone = latest_order.get("zone", "Inconnue")
+            total = latest_order.get("total", 0)
+            
+            message_afi = (
+                f"🔔 **Nouvelle commande en attente (#{order_id})**\n"
+                f"Client : {chat_id}\n"
+                f"Détails : {details}\n"
+                f"Zone : {zone}\n"
+                f"Total : {total} FCFA\n\n"
+                f"Répondez **OUI {order_id}** pour valider ou **NON {order_id}** pour refuser."
+            )
+            await send_whatsapp_message(AFI_CHAT_ID, message_afi)
 
 @app.post("/webhook")
 async def green_api_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
-    credentials: HTTPAuthorizationCredentials = Security(security)
+    authorization: str = Header(None)
 ):
     """Endpoint recevant les webhooks de Green API."""
-    print("Webhook reçu : ", credentials.credentials)
-    # Vérification du jeton de sécurité du webhook
-    if credentials.credentials != WEBHOOK_SECRET:
+    token_recu = authorization
+    if authorization and authorization.startswith("Bearer "):
+        token_recu = authorization.replace("Bearer ", "").strip()
+
+    if token_recu != WEBHOOK_SECRET:
         raise HTTPException(status_code=403, detail="Accès non autorisé")
 
-    body = await request.json()
+    body_bytes = await request.body()
+    if not body_bytes:
+        return {"status": "ignored", "reason": "empty body"}
     
-    # Ne traiter que les messages entrants
+    try:
+        body = json.loads(body_bytes)
+    except json.JSONDecodeError:
+        return {"status": "error", "reason": "invalid json"}
+    
     if body.get("typeWebhook") == "incomingMessageReceived":
         message_data = body.get("messageData", {})
         type_message = message_data.get("typeMessage")
         
-        # On ne traite que les messages texte
         if type_message == "textMessage":
             receipt_id = body.get("receiptId")
             
-            # Dédoublonnage
             if receipt_id in processed_messages:
                 return {"status": "ignored", "reason": "duplicate"}
             processed_messages.add(receipt_id)
@@ -185,9 +233,7 @@ async def green_api_webhook(
             sender_name = sender_data.get("senderName", "Client")
             text = message_data.get("textMessageData", {}).get("textMessage", "")
             
-            # Ignorer les messages de groupe (@g.us)
             if chat_id and "@g.us" not in chat_id:
-                # Lancer en arrière-plan pour répondre vite à Green API (code 200 immédiat)
                 background_tasks.add_task(process_incoming_message, chat_id, sender_name, text)
 
     return {"status": "ok"}
