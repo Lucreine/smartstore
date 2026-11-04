@@ -1,5 +1,6 @@
-import httpx
 import os
+
+import httpx
 
 GREEN_API_ID = os.getenv("GREEN_API_ID")
 GREEN_API_TOKEN = os.getenv("GREEN_API_TOKEN")
@@ -15,6 +16,7 @@ async def send_whatsapp_message(chat_id: str, message: str):
         try:
             response = await client.post(url, json=payload, timeout=10.0)
             return response.json()
-        except Exception as e:
+            
+        except (httpx.HTTPError, ValueError) as e:
             print(f"Erreur d'envoi WhatsApp: {e}")
             return None

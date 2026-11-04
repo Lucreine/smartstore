@@ -1,19 +1,21 @@
+import json
 import logging
+import os
 from typing import Any
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Header
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi.security import HTTPBearer
 from pydantic import BaseModel, Field
-from smartstore.agent.orchestrator import run_agent
+
+from smartstore.agent.gerant import run_gerant
+from smartstore.services.whatsapp import send_whatsapp_message
 from smartstore.tools.orders import (
-    load_orders,
     approve_order,
+    load_orders,
     reject_order,
 )
-import os
-from smartstore.services.whatsapp import send_whatsapp_message
-from smartstore.agent.orchestrator import run_agent
-from smartstore.tools.orders import load_orders, approve_order, reject_order, create_order_request
-import json
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="SmartStore API",
@@ -48,7 +50,7 @@ async def health_check():
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     try:
-        result = await run_agent(request.message)
+        result = await run_gerant(request.message)
         return ChatResponse(
             success=result["success"],
             response=result["response"],
@@ -57,7 +59,7 @@ async def chat(request: ChatRequest):
             trace=result.get("trace"),
         )
     except Exception:
-        logging.exception("Erreur pendant l'exécution de l'agent")
+        logger.exception("Erreur pendant l'exécution de l'agent")
         raise HTTPException(
             status_code=503,
             detail="Le service est temporairement indisponible.",
@@ -120,7 +122,7 @@ AFI_CHAT_ID = os.getenv("AFI_CHAT_ID", "2290167535145@c.us") # Le numéro WhatsA
 
 processed_messages = set()
 
-async def process_incoming_message(chat_id: str, text: str):
+async def process_incoming_message(chat_id: str, sender_name: str, text: str):
     """Exécute l'agent ou gère les validations d'Afi par WhatsApp."""
     
     if chat_id == AFI_CHAT_ID:
@@ -165,7 +167,7 @@ async def process_incoming_message(chat_id: str, text: str):
             await send_whatsapp_message(AFI_CHAT_ID, msg_afi)
             return
 
-    result = await run_agent(text)
+    result = await run_gerant(text)
     bot_response = result["response"]
     
     await send_whatsapp_message(chat_id, bot_response)
